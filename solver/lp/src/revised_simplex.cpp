@@ -996,22 +996,16 @@ SolverResult solve_standard(const StandardLp& lp, const RevisedSimplexOptions& o
         << result.duality_gap << " (tol " << opt.optimality_tol << "). ";
     if (!primal_ok) {
       oss << "Primal infeasible, so the point is not even usable. ";
-      oss << "Downgrading to NUMERICAL_ERROR rather than reporting OPTIMAL.";
-      result.status = SolverStatus::NumericalError;
     } else if (!dual_ok) {
       oss << "Primal feasible but the basis is dual infeasible, so this is a vertex "
              "that may be improvable; optimality is NOT proven. ";
-      // For B&B node LPs, primal feasible with small duality gap is good enough
-      // for bound-based pruning even without dual feasibility certificate.
-      // Return FEASIBLE instead of NUMERICAL_ERROR so the B&B can use the bound.
-      if (gap_ok) {
-        oss << "Duality gap is within tolerance, so returning FEASIBLE status for use in branch-and-bound.";
-        result.status = SolverStatus::Feasible;
-      } else {
-        oss << "Downgrading to NUMERICAL_ERROR due to open duality gap.";
-        result.status = SolverStatus::NumericalError;
-      }
     } else {
+      oss << "Primal and dual feasible but the duality gap is still open. ";
+    }
+    oss << "Downgrading to NUMERICAL_ERROR rather than reporting OPTIMAL.";
+
+    result.status = SolverStatus::NumericalError;
+    result.message = oss.str();
       oss << "Primal and dual feasible but the duality gap is still open. ";
       oss << "Downgrading to NUMERICAL_ERROR rather than reporting OPTIMAL.";
       result.status = SolverStatus::NumericalError;

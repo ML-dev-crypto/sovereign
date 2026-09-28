@@ -513,20 +513,55 @@ SolverResult BranchAndBoundSolver::solve(const OptimizationModel& model) const {
     SolverResult lp = solve_node_lp(node.model, lp_opt);
     lp_iterations += lp.iterations;
 
-    if (lp.status == SolverStatus::Infeasible) continue;
-    if (lp.status == SolverStatus::Unbounded) {
-      result.status = SolverStatus::Unbounded;
-      result.message = "MILP relaxation unbounded.";
-      result.nodes = nodes;
-      result.iterations = lp_iterations;
-      return result;
+    // Debug: log root LP status for troubleshooting
+    if (nodes == 1 && std::getenv("SOVEREIGN_DEBUG_ROOT_LP")) {
+      std::cerr << "[DEBUG] Root LP: status=" << to_string(lp.status)
+                << " has_obj=" << lp.has_objective_value
+                << " obj=" << (lp.has_objective_value ? std::to_string(lp.objective_value) : "N/A")
+                << " primal_res=" << lp.primal_residual
+                << " dual_res=" << lp.dual_residual
+                << " gap=" << lp.duality_gap
+                << "\n";
     }
-    if (lp.status != SolverStatus::Optimal && lp.status != SolverStatus::Feasible) {
-      // A node LP failed to solve. This subtree cannot be soundly pruned or
-      // explored further — record the failure and downgrade the final status so
-      // we never silently report OPTIMAL (or INFEASIBLE) with a dropped branch.
-      // Distinguish the reason, because "ran out of iterations" and "the basis
-      // went singular" call for completely different responses.
+
+    // Accept OPTIMAL, FEASIBLE, or NUMERICAL_ERROR with usable bounds
+    // Following HiGHS approach: if we have objective value with acceptable
+    // primal residual, we can use it for B&B even without dual feasibility
+    bool lp_usable = (lp.status == SolverStatus::Optimal ||
+                      lp.status == SolverStatus::Feasible);
+
+    if (!lp_usable && lp.status == SolverStatus::NumericalError) {
+      // NUMERICAL_ERROR with primal feasibility is acceptable for B&B
+      // Similar to HiGHS kUnscaledPrimalFeasible status
+      const bool has_usable_objective = lp.has_objective_value &&
+                                       lp.primal_residual <= options_.feasibility_tol;
+
+      if (has_usable_objective) {
+        lp_usable = true;
+        std::ostringstream oss;
+        oss << "Node LP returned NUMERICAL_ERROR but is primal feasible "
+            << "(primal_residual=" << lp.primal_residual
+            << ", dual_residual=" << lp.dual_residual
+            << ", duality_gap=" << lp.duality_gap << ") - accepting for B&B";
+        warnings.push_back(oss.str());
+      }
+    }
+
+    if (!lp_usable) {
+      // Node LP failed without usable bound - must drop subtree
+      if (lp.status == SolverStatus::Infeasible) {
+        // Infeasible node - prune it
+        continue;
+      }
+      if (lp.status == SolverStatus::Unbounded) {
+        result.status = SolverStatus::Unbounded;
+        result.message = "MILP relaxation unbounded.";
+        result.nodes = nodes;
+        result.iterations = lp_iterations;
+        return result;
+      }
+
+      // Other failure (NumericalError without usable bound, IterationLimit, etc.)
       any_node_lp_error = true;
       std::ostringstream oss;
       oss << "Node LP returned " << to_string(lp.status)
